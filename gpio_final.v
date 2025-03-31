@@ -1,4 +1,3 @@
-
 `timescale 1ns/1ps
 
 // GPIO Definitions
@@ -321,7 +320,7 @@ always @ (posedge clk_i or posedge rst_i) begin
     end
 end
 
-// Interrupt Level Register
+// Interrupt Level Register ( 0 for level and 1 for edge)
 reg [31:0]  gpio_int_level_active_high_q;
 
 always @ (posedge clk_i or posedge rst_i) begin
@@ -361,6 +360,7 @@ end
 // Writing the data in the data_r register
 reg [31:0] data_r;
 wire [31:0] gpio_int_status_raw_value;
+reg [31:0] interrupt_raw_q;  // Registered raw interrupt status (for GPIO_INT_STATUS)
 
 always @ (posedge clk_i or posedge rst_i) begin
     if(rst_i) begin
@@ -444,13 +444,11 @@ assign gpio_output_enable_o = gpio_direction_reg;
 
 // Interrupt Logic
 
-reg intr_q;
-reg [31:0] interrupt_raw_q;
-reg [31:0] interrupt_raw_r;
-reg [31:0] input_last_q;
+// Registers for edge detection and interrupt status
+reg [31:0] input_last_q;  // Previous input for edge detection
 
-// Store previous input for edge detection
-always @ (posedge clk_i or posedge rst_i) begin
+// Update previous input (1 cycle delay for edge detection)
+always @(posedge clk_i or posedge rst_i) begin
     if (rst_i) begin
         input_last_q <= 32'b0;
     end else begin
@@ -458,70 +456,51 @@ always @ (posedge clk_i or posedge rst_i) begin
     end
 end
 
+// Combinational interrupt logic
 reg [31:0] active_high_inputs;
 reg [31:0] active_low_inputs;
 reg [31:0] level_active_w;
-
 reg [31:0] edge_detect_w;
 reg [31:0] rising_edges;
 reg [31:0] falling_edges;
 reg [31:0] edge_active_w;
-
 reg [31:0] interrupt_clear;
 reg [31:0] interrupt_set;
-reg [31:0] next_interrupt_raw;
-reg [31:0] raw_interrupt_value;
-reg [31:0] intr_q_value;
+reg [31:0] next_interrupt_raw_w;
 
-always @ (*) begin
+always @(*) begin
+    // Level detection
+    active_high_inputs = gpio_input_i & gpio_int_level_active_high_q;
+    active_low_inputs = ~gpio_input_i & ~gpio_int_level_active_high_q;
+    level_active_w = (active_high_inputs | active_low_inputs) & (~gpio_int_mode_edge_q);
+    
+    // Edge detection (uses input_last_q, so 1-cycle delay)
+    edge_detect_w = input_last_q ^ gpio_input_i;
+    rising_edges = edge_detect_w & gpio_input_i;
+    falling_edges = edge_detect_w & ~gpio_input_i;
+    edge_active_w = ((rising_edges & gpio_int_level_active_high_q) | 
+                     (falling_edges & ~gpio_int_level_active_high_q)) & gpio_int_mode_edge_q;
+    
+    // Interrupt clear and set
+    interrupt_clear = (write_en_w && (cfg_awaddr_i[7:0] == `GPIO_INT_CLR)) ? 
+                      cfg_wdata_i[`GPIO_INT_CLR_ACK_R] : 32'b0;
+    interrupt_set = (write_en_w && (cfg_awaddr_i[7:0] == `GPIO_INT_SET)) ? 
+                    cfg_wdata_i[`GPIO_INT_SET_SW_IRQ_R] : 32'b0;
+    
+    // Raw interrupt status (combinational)
+    next_interrupt_raw_w = (interrupt_raw_q | interrupt_set | edge_active_w | level_active_w) & ~interrupt_clear;
+end
+
+// Sequential update for interrupt status register (GPIO_INT_STATUS)
+always @(posedge clk_i or posedge rst_i) begin
     if (rst_i) begin
-        active_high_inputs = 32'b0;
-        active_low_inputs = 32'b0;
-        level_active_w = 32'b0;
-        edge_detect_w = 32'b0;
-        rising_edges = 32'b0;
-        falling_edges = 32'b0;
-        edge_active_w = 32'b0;
-        interrupt_clear = 32'b0;
-        interrupt_set = 32'b0;
-        next_interrupt_raw = 32'b0;
-        raw_interrupt_value = 32'b0;
-        intr_q_value = 32'b0;
+        interrupt_raw_q <= 32'b0;
     end else begin
-        active_high_inputs = gpio_input_i & gpio_int_level_active_high_q;
-        active_low_inputs = ~gpio_input_i & ~gpio_int_level_active_high_q;
-        level_active_w = (active_high_inputs | active_low_inputs) & (~gpio_int_mode_edge_q);
-        
-        // Edge detection logic
-        edge_detect_w = input_last_q ^ gpio_input_i;
-        rising_edges = edge_detect_w & gpio_input_i;
-        falling_edges = edge_detect_w & ~gpio_input_i;
-        edge_active_w = ((rising_edges & gpio_int_level_active_high_q) | 
-                          (falling_edges & ~gpio_int_level_active_high_q)) & 
-                          gpio_int_mode_edge_q;
-        
-        // Interrupt status logic
-        // Interrupt clear signal
-        interrupt_clear = (write_en_w && (cfg_awaddr_i[7:0] == `GPIO_INT_CLR)) ? 
-                            cfg_wdata_i[`GPIO_INT_CLR_ACK_R] : 32'b0;
-        
-        // Software interrupt set signal
-        interrupt_set = (write_en_w && (cfg_awaddr_i[7:0] == `GPIO_INT_SET)) ? 
-                          cfg_wdata_i[`GPIO_INT_SET_SW_IRQ_R] : 32'b0;
-        
-        // Next state logic for raw interrupts
-        next_interrupt_raw = (interrupt_raw_q & ~interrupt_clear|   // Clear takes priority
-                              interrupt_set |      // Software set
-                              edge_active_w |     // New edge triggers
-                              level_active_w); // Level triggers
-        
-        interrupt_raw_q = next_interrupt_raw & gpio_int_mask_reg;
-        intr_q = |(next_interrupt_raw & gpio_int_mask_reg);
+        interrupt_raw_q <= next_interrupt_raw_w;  // Still needed for status read
     end
 end
 
-
-// Output interrupts
-assign intr_o = intr_q;
+// Interrupt output (combinational, masked)
+assign intr_o = |(next_interrupt_raw_w & gpio_int_mask_reg);
 
 endmodule
