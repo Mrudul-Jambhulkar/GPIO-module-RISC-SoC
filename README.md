@@ -1,6 +1,6 @@
 # GPIO Module for RISC-V SoC
 
-This repository contains a Verilog-based General Purpose Input/Output (GPIO) module designed for integration with a RISC-V System-on-Chip (SoC). It supports essential GPIO operations such as input/output direction control, reading/writing pin values, and interrupt handling.
+This repository contains a Verilog-based General Purpose Input/Output (GPIO) module designed for integration with a RISC-V System-on-Chip (SoC). It supports essential GPIO operations such as input/output direction control, reading/writing pin values, and interrupt handling. This was done as a part of course project of course EE-705 : V L S I Design Lab .
 
 ## 📁 Repository Structure
 
